@@ -18,6 +18,7 @@ resource "aws_subnet" "public" {
 
   tags = {
     Name = "web-tier-${count.index}"
+	type = "public"
   }
 
 }
@@ -31,6 +32,7 @@ resource "aws_subnet" "private" {
 
   tags = {
     Name = "app-tier-${count.index}"
+	type = "private"
   }
 
 }
@@ -44,6 +46,7 @@ resource "aws_subnet" "db" {
 
   tags = {
     Name = "db-private-${count.index}"
+	type = "database"
   }
 
 }
@@ -196,17 +199,58 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# Create EC2 instances for webservers
+resource "aws_security_group" "app_sg" {
+  name        = "allow_http"
+  description = "Allow http inbound traffic"
+  vpc_id      = "${aws_vpc.vpc_ops.id}"
 
-resource "aws_instance" "webservers" {
-  count           = "${length(var.public_cidr_blocks)}"
-  ami             = "${var.web_ami}"
-  instance_type   = "${var.web_instance}"
-  security_groups = ["${aws_security_group.webserver_sg.id}"]
-  subnet_id       = "${element(aws_subnet.public.*.id,count.index)}"
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["$aws_security_group.internal_lb_sg.id"]
+  }
+  
+  ingress {
+    from_port   = 1521
+    to_port     = 1521
+    protocol    = "tcp"
+    cidr_blocks = ["$aws_subnet.db.id"]
+  }
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   tags {
-    Name = "${element(var.webserver_name,count.index)}"
+    Name = "${var.websg_name}"
+  }
+}
+
+resource "aws_security_group" "internal_lb_sg" {
+  name        = "allow_http"
+  description = "Allow http inbound traffic"
+  vpc_id      = "${aws_vpc.vpc_ops.id}"
+
+  ingress {
+    from_port   = 8000
+    to_port     = 8000
+    protocol    = "tcp"
+    cidr_blocks = ["$aws_security_group.web_sg.id"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags {
+    Name = "${var.websg_name}"
   }
 }
 
@@ -214,7 +258,8 @@ data "aws_subnet_ids" "public" {
   vpc_id = ${aws_vpc.vpc_ops.id}
 
   filter {
-    name   = "tag:Name"
+    name   = "tag:type"
+	value  = "public"
   }
 }
 
@@ -222,59 +267,109 @@ data "aws_subnet_ids" "private" {
   vpc_id = ${aws_vpc.vpc_ops.id}
 
   filter {
-    name   = "tag:Name"
+    name   = "tag:type"
+	value = "private"
   }
 }
 
+resource "aws_launch_configuration" "web_launch_conf" {
+  name_prefix     = "web_auto_Scaling-"
+  image_id        = "${var.web_ami}"
+  instance_type   = "t2.micro"
+  user_data       = file("user-data.sh")
+  security_groups = "${aws_security_group.webserver_sg.id}"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_launch_configuration" "app_launch_conf" {
+  name_prefix     = "app_auto_Scaling-"
+  image_id        = "${var.app_ami}"
+  instance_type   = "t2.micro"
+  user_data       = file("app-data.sh")
+  security_groups = "${aws_security_group.app_sg.id}"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_autoscaling_group" "web_asg" {
+  min_size             = 2
+  max_size             = 4
+  desired_capacity     = 2
+  launch_configuration = aws_launch_configuration.web_launch_conf.name
+  vpc_zone_identifier  = ["${data.aws_subnet_ids.public.all.ids}"]
+}
+
+
+resource "aws_autoscaling_group" "app_asg" {
+  min_size             = 2
+  max_size             = 4
+  desired_capacity     = 2
+  launch_configuration = "$aws_launch_configuration.app_launch_conf.name"
+  vpc_zone_identifier  = ["${data.aws_subnet_ids.private.all.ids}"]
+}
 
 # Creating application load balancer
 
-resource "aws_lb" "weblb" {
+
+
+resource "aws_lb" "web_lb" {
   name               = "${var.lb_name}"
   load_balancer_type = "application"
+  internal           = false
   security_groups    = ["${aws_security_group.webserver_sg.id}"]
-  subnets            = ["${aws_subnet.web.*.id}"]
+  subnets            = ["${data.aws_subnet_ids.public.all.ids}"]
 
   tags {
     Name = "${var.lb_name}"
   }
 }
 
-# Creating load balancer target group
-
-resource "aws_lb_target_group" "alb_group" {
-  name     = "${var.tg_name}"
-  port     = "${var.tg_port}"
-  protocol = "${var.tg_protocol}"
-  vpc_id   = "${aws_vpc.vpc_ops.id}"
+resource "aws_autoscaling_attachment" "web_auto_att" {
+  autoscaling_group_name = aws_autoscaling_group.web_asg.id
+  elb                    = aws_lb.web_lb.id
 }
 
-#Creating listeners
+resource "aws_elb" "app_elb" {
+  name               = "${var.lb_name}"
+  load_balancer_type = "application"
+  internal           = true
+  security_groups    = ["${aws_security_group.internal_lb_sg.id}"]
+  subnets            = ["${data.aws_subnet_ids.private.all.ids}"]
+  
+  listener {
+     instance_port     = 8000
+     instance_protocol = "http"
+     lb_port           = 80
+     lb_protocol       = "http"
+   }
 
-resource "aws_lb_listener" "webserver-lb" {
-  load_balancer_arn = "${aws_lb.weblb.arn}"
-  port              = "${var.listener_port}"
-  protocol          = "${var.listener_protocol}"
+   listener {
+     instance_port      = 8000
+     instance_protocol  = "http"
+     lb_port            = 443
+     lb_protocol        = "https"
+     ssl_certificate_id = "<arn>:server-certificate/certName"
+   }
 
-  # certificate_arn  = "${var.certificate_arn_user}"
-  default_action {
-    target_group_arn = "${aws_lb_target_group.alb_group.arn}"
-    type             = "forward"
+   health_check {
+     healthy_threshold   = 2
+     unhealthy_threshold = 2
+     timeout             = 3
+     target              = "HTTP:8000/"
+     interval            = 30
+   }
+
+  tags {
+    Name = "${var.lb_name}"
   }
 }
 
-#Creating listener rules
-
-resource "aws_lb_listener_rule" "allow_all" {
-  listener_arn = "${aws_lb_listener.webserver-lb.arn}"
-
-  action {
-    type             = "forward"
-    target_group_arn = "${aws_lb_target_group.alb_group.arn}"
-  }
-
-  condition {
-    field  = "path-pattern"
-    values = ["*"]
-  }
+resource "aws_autoscaling_attachment" "app_auto_att" {
+  autoscaling_group_name = aws_autoscaling_group.app_asg.id
+  elb                    = aws_lb.app_lb.id
 }
