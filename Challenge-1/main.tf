@@ -164,6 +164,24 @@ resource "aws_db_subnet_group" "rds_subnet_group" {
 }
 
 
+resource "aws_security_group" "db-sg" {
+    name = "rdsSG"
+    description = "RDS security group"
+    vpc_id = "${aws_vpc.vpc_ops.id}"  
+    ingress {
+      from_port = 22
+      to_port = 22
+      protocol = "tcp"
+      cidr_blocks = ["${aws_subnet.private.cidr_block}"]
+   }
+   egress {
+      from_port = 0
+      to_port = 0
+      protocol = "-1"
+      cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
 resource "aws_db_instance" "rds" {
   allocated_storage    = "${var.rds_storage}"
   engine               = "${var.rds_engine}"
@@ -172,6 +190,7 @@ resource "aws_db_instance" "rds" {
   username             = "${var.rds_username}"
   password             = "${var.rds_password}"
   db_subnet_group_name = "${var.rds_subnet_name}"
+  vpc_security_group_ids = ["${aws_security_group.db-sg.id}"]
   depends_on = ["aws_db_subnet_group.rds_subnet_group"]
 }
 
@@ -321,6 +340,7 @@ resource "aws_lb" "web_lb" {
   name               = "${var.lb_name}"
   load_balancer_type = "application"
   internal           = false
+  enable_cross_zone_load_balancing = true
   security_groups    = ["${aws_security_group.webserver_sg.id}"]
   subnets            = ["${data.aws_subnet_ids.public.all.ids}"]
 
@@ -338,6 +358,7 @@ resource "aws_elb" "app_elb" {
   name               = "${var.lb_name}"
   load_balancer_type = "application"
   internal           = true
+  enable_cross_zone_load_balancing = true
   security_groups    = ["${aws_security_group.internal_lb_sg.id}"]
   subnets            = ["${data.aws_subnet_ids.private.all.ids}"]
   
