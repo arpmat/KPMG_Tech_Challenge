@@ -1,7 +1,7 @@
 
 data "aws_availability_zones" "available" {}
 
-resource "aws_vpc" "VPC-OPS" {
+resource "aws_vpc" "vpc_ops" {
   cidr_block = "${var.vpc_cidr_block}"
   instance_tenancy = "default"
 
@@ -11,7 +11,7 @@ resource "aws_vpc" "VPC-OPS" {
 }
 
 resource "aws_subnet" "public" {
-  vpc_id            = "${aws_vpc.default.id}"
+  vpc_id            = "${aws_vpc.vpc_ops.id}"
   count             = "${length(var.web_subnets)}"
   availability_zone = "${data.aws_availability_zones.available.names[count.index]}"
   cidr_block        = "${var.public_cidr_blocks[count.index]}"
@@ -23,7 +23,7 @@ resource "aws_subnet" "public" {
 }
 
 resource "aws_subnet" "private" {
-  vpc_id            = "${aws_vpc.default.id}"
+  vpc_id            = "${aws_vpc.vpc_ops.id}"
   count             = "${length(var.app_subnets)}"
   availability_zone = "${data.aws_availability_zones.available.names[count.index]}"
   cidr_block        = "${var.private_cidr_blocks[count.index]}"
@@ -37,7 +37,7 @@ resource "aws_subnet" "private" {
 
 resource "aws_subnet" "db" {
   count             = "${length(var.db_subnets)}"
-  vpc_id            = "${aws_vpc.default.id}"
+  vpc_id            = "${aws_vpc.vpc_ops.id}"
   availability_zone = "${data.aws_availability_zones.available.names[count.index]}"
   cidr_block        = "${var.db_cidr_blocks[count.index]}"
   map_public_ip_on_launch = false
@@ -49,7 +49,7 @@ resource "aws_subnet" "db" {
 }
 
 resource "aws_internet_gateway" "my_igw" {
-  vpc_id = "${aws_vpc.default.id}"
+  vpc_id = "${aws_vpc.vpc_ops.id}"
 
   tags = {
     Name = "${var.vpc_name}"
@@ -58,7 +58,7 @@ resource "aws_internet_gateway" "my_igw" {
 
 
 resource "aws_route_table" "web" {
-  vpc_id = "${aws_vpc.default.id}"
+  vpc_id = "${aws_vpc.vpc_ops.id}"
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -112,7 +112,7 @@ resource "aws_route_table_association" "web_rts_s" {
 
 
 resource "aws_route_table" "app" {
-  vpc_id = "${aws_vpc.default.id}"
+  vpc_id = "${aws_vpc.vpc_ops.id}"
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -132,7 +132,7 @@ resource "aws_route_table_association" "app" {
 
 
 resource "aws_route_table" "db" {
-  vpc_id = "${aws_vpc.default.id}"
+  vpc_id = "${aws_vpc.vpc_ops.id}"
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -175,7 +175,7 @@ resource "aws_db_instance" "rds" {
 resource "aws_security_group" "web_sg" {
   name        = "allow_http"
   description = "Allow http inbound traffic"
-  vpc_id      = "${aws_vpc.default.id}"
+  vpc_id      = "${aws_vpc.vpc_ops.id}"
 
   ingress {
     from_port   = 80
@@ -196,17 +196,38 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
+# Create EC2 instances for webservers
+
 resource "aws_instance" "webservers" {
   count           = "${length(var.public_cidr_blocks)}"
   ami             = "${var.web_ami}"
   instance_type   = "${var.web_instance}"
   security_groups = ["${aws_security_group.webserver_sg.id}"]
-  subnet_id       = "${element(aws_subnet.web.*.id,count.index)}"
+  subnet_id       = "${element(aws_subnet.public.*.id,count.index)}"
 
   tags {
     Name = "${element(var.webserver_name,count.index)}"
   }
 }
+
+data "aws_subnet_ids" "public" {
+  vpc_id = ${aws_vpc.vpc_ops.id}
+
+  filter {
+    name   = "tag:Name"
+  }
+}
+
+data "aws_subnet_ids" "private" {
+  vpc_id = ${aws_vpc.vpc_ops.id}
+
+  filter {
+    name   = "tag:Name"
+  }
+}
+
+
+# Creating application load balancer
 
 resource "aws_lb" "weblb" {
   name               = "${var.lb_name}"
@@ -219,23 +240,30 @@ resource "aws_lb" "weblb" {
   }
 }
 
+# Creating load balancer target group
+
 resource "aws_lb_target_group" "alb_group" {
   name     = "${var.tg_name}"
   port     = "${var.tg_port}"
   protocol = "${var.tg_protocol}"
-  vpc_id   = "${aws_vpc.default.id}"
+  vpc_id   = "${aws_vpc.vpc_ops.id}"
 }
+
+#Creating listeners
 
 resource "aws_lb_listener" "webserver-lb" {
   load_balancer_arn = "${aws_lb.weblb.arn}"
   port              = "${var.listener_port}"
   protocol          = "${var.listener_protocol}"
 
+  # certificate_arn  = "${var.certificate_arn_user}"
   default_action {
     target_group_arn = "${aws_lb_target_group.alb_group.arn}"
     type             = "forward"
   }
 }
+
+#Creating listener rules
 
 resource "aws_lb_listener_rule" "allow_all" {
   listener_arn = "${aws_lb_listener.webserver-lb.arn}"
