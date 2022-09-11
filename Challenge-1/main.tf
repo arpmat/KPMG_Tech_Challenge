@@ -227,14 +227,14 @@ resource "aws_security_group" "app_sg" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["$aws_security_group.internal_lb_sg.id"]
+    security_groups = ["$aws_security_group.internal_lb_sg.id"]
   }
   
   ingress {
     from_port   = 1521
     to_port     = 1521
     protocol    = "tcp"
-    cidr_blocks = ["$aws_subnet.db.id"]
+    security_groups = ["$aws_subnet.db.id"]
   }
   
   egress {
@@ -258,7 +258,7 @@ resource "aws_security_group" "internal_lb_sg" {
     from_port   = 8000
     to_port     = 8000
     protocol    = "tcp"
-    cidr_blocks = ["$aws_security_group.web_sg.id"]
+    security_groups = ["$aws_security_group.web_sg.id"]
   }
 
   egress {
