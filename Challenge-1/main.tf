@@ -101,13 +101,7 @@ resource "aws_nat_gateway" "web_2" {
 
 }
 
-resource "aws_route_table_association" "web_rts_p" {
-  count          = "${length(var.public_cidr_blocks)}"
-  subnet_id      = "${element(aws_subnet.public.*.id, count.index)}"
-  route_table_id = "${aws_route_table.web.id}"
-}
-
-resource "aws_route_table_association" "web_rts_s" {
+resource "aws_route_table_association" "web_rt" {
   count          = "${length(var.public_cidr_blocks)}"
   subnet_id      = "${element(aws_subnet.public.*.id, count.index)}"
   route_table_id = "${aws_route_table.web.id}"
@@ -127,7 +121,7 @@ resource "aws_route_table" "app" {
   }
 }
 
-resource "aws_route_table_association" "app" {
+resource "aws_route_table_association" "app_rt" {
   count          = "${length(var.private_cidr_blocks)}"
   subnet_id      = "${element(aws_subnet.private.*.id, count.index)}"
   route_table_id = "${aws_route_table.app.id}"
@@ -278,7 +272,7 @@ data "aws_subnet_ids" "public" {
 
   filter {
     name   = "tag:type"
-	value  = "public"
+    value  = "public"
   }
 }
 
@@ -287,7 +281,7 @@ data "aws_subnet_ids" "private" {
 
   filter {
     name   = "tag:type"
-	value = "private"
+    value = "private"
   }
 }
 
